@@ -24,6 +24,7 @@ dependencies = [
     "numpy>=1.21.0",
     "matplotlib>=3.5.0",
     "tqdm>=4.64.0",
+    "wandb>=0.20.1",
 ]
 
 [project.optional-dependencies]
