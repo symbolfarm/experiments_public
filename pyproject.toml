@@ -3,11 +3,11 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pub-experiments"
+name = "symbolfarm_experiments_public"
 version = "0.1.0"
 description = "Symbol Farm public machine learning experiments"
-authors = [{name = "Research Implementation"}]
-license = {text = "None"}
+authors = [{name = "Toby Lightheart"}]
+# license-files = "None"
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
@@ -36,8 +36,8 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/symbolfarm/pub-experiments"
-Documentation = "https://github.com/symbolfarm/pub-experiments#readme"
+Repository = "https://github.com/symbolfarm/experiments_public"
+Documentation = "https://github.com/symbolfarm/experiments_public#readme"
 
 [tool.black]
 line-length = 100
