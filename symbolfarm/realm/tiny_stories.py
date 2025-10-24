@@ -1,13 +1,16 @@
-import torch
-from torch.utils.data import DataLoader, Dataset
-from transformers import GPT2TokenizerFast
-from datasets import load_dataset
-import numpy as np
-from typing import Dict, List, Optional, Tuple
 import os
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from config import CascadeConfig
+import numpy as np
+
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from transformers import GPT2TokenizerFast
+from datasets import load_dataset
+
+from symbolfarm.design._01_cascade_correlation.config import ConfigTrain
 
 class TinyStoriesDataset(Dataset):
     """Dataset class for TinyStories with tokenization and chunking."""
@@ -68,13 +71,15 @@ class TinyStoriesDataset(Dataset):
 class TinyStoriesDataModule:
     """Data module for loading and processing TinyStories dataset."""
     
-    def __init__(self, config: CascadeConfig):
-        self.config = config
+    def __init__(self, config: ConfigTrain):
+        # Data
+        self.dataset_name: str = "roneneldan/TinyStories"
         self.tokenizer = None
         self.train_dataset = None
         self.val_dataset = None
-        self.test_dataset = None
         
+        self.config = config
+
         # Create cache directory
         self.cache_dir = Path("./data_cache")
         self.cache_dir.mkdir(exist_ok=True)
@@ -91,22 +96,17 @@ class TinyStoriesDataModule:
         
         print(f"Tokenizer vocab size: {len(self.tokenizer)}")
         
-        # Update config vocab size if different
-        if self.config.vocab_size != len(self.tokenizer):
-            print(f"Updating vocab_size from {self.config.vocab_size} to {len(self.tokenizer)}")
-            self.config.vocab_size = len(self.tokenizer)
-    
     def prepare_data(self):
         """Download and cache the dataset."""
         print("Loading TinyStories dataset...")
         
         try:
             # Load dataset
-            dataset = load_dataset(self.config.dataset_name)
+            dataset = load_dataset(self.dataset_name)
             
             # Extract stories (text field)
-            train_stories = [item['text'] for item in dataset[self.config.train_split]]
-            val_stories = [item['text'] for item in dataset[self.config.val_split]]
+            train_stories = [item['text'] for item in dataset['train']]
+            val_stories = [item['text'] for item in dataset['validation']]
             
             # Limit dataset size for faster experimentation (remove in production)
             max_train_stories = 50000  # Adjust as needed
@@ -126,7 +126,7 @@ class TinyStoriesDataModule:
             )
             
             self.val_dataset = TinyStoriesDataset(
-                val_stories, self.tokenizer, self.config.max_len, stride=self.config.max_len  # No overlap for validation
+                val_stories, self.tokenizer, self.config.max_len, stride=self.config_train.max_len  # No overlap for validation
             )
             
             print(f"Training chunks: {len(self.train_dataset)}")
@@ -223,7 +223,7 @@ def collate_fn(batch: List[torch.Tensor]) -> Dict[str, torch.Tensor]:
         'targets': input_ids.clone()  # For language modeling, targets = inputs
     }
 
-def create_dataloaders(config: CascadeConfig) -> Tuple[DataLoader, DataLoader, TinyStoriesDataModule]:
+def create_dataloaders(config: ConfigTrain) -> Tuple[DataLoader, DataLoader, TinyStoriesDataModule]:
     """
     Create train and validation dataloaders.
     
@@ -243,7 +243,7 @@ def create_dataloaders(config: CascadeConfig) -> Tuple[DataLoader, DataLoader, T
     
     return train_loader, val_loader, data_module
 
-def test_dataloader(config: CascadeConfig):
+def test_dataloader(config: ConfigTrain):
     """Test the dataloader functionality."""
     print("Testing dataloader...")
     
@@ -278,9 +278,9 @@ if __name__ == "__main__":
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Fix tokenizer warning
     
-    from config import CascadeConfig
+    from symbolfarm.design._01_cascade_correlation.config import ConfigTrain
     
-    config = CascadeConfig()
+    config = ConfigTrain()
     config.batch_size = 4  # Small batch for testing
     config.max_len = 128   # Shorter sequences for testing
     config.num_workers = 0  # Disable multiprocessing for testing

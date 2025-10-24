@@ -13,9 +13,9 @@ from typing import Dict, List
 import logging
 from dataclasses import asdict
 
-from config import CascadeConfig
-from model import CascadeTransformer, LanguageModelingLoss
-
+from symbolfarm.design._01_cascade_correlation.config import ConfigCascadeCorrelation, ConfigTrain
+from symbolfarm.design._01_cascade_correlation.model import CascadeTransformer
+from symbolfarm.module.model import LanguageModelingLoss
 from symbolfarm.monitor.growth import GrowthMonitor
 from symbolfarm.realm.tiny_stories import create_dataloaders
 
@@ -26,29 +26,30 @@ logger = logging.getLogger(__name__)
 class CascadeTrainer:
     """Trainer for cascade-correlation transformer."""
     
-    def __init__(self, config: CascadeConfig):
-        self.config = config
-        self.device = torch.device(config.device)
+    def __init__(self, config_model: ConfigCascadeCorrelation, config_train: ConfigTrain):
+        self.config_model = config_model
+        self.config_train = config_train
+        self.device = torch.device(config_train.device)
         
         # Initialize model and move to device
-        self.model = CascadeTransformer(config).to(self.device)
+        self.model = CascadeTransformer(config_model).to(self.device)
         
         # Setup data
-        self.train_loader, self.val_loader, self.data_module = create_dataloaders(config)
+        self.train_loader, self.val_loader, self.data_module = create_dataloaders(config_train)
         
         # Setup loss function
         self.criterion = LanguageModelingLoss(
-            config.vocab_size, config.label_smoothing
+            config_model.vocab_size, config_train.label_smoothing
         ).to(self.device)
         
         # Setup growth monitor
         self.growth_monitor = GrowthMonitor(
-            patience=config.patience,
-            threshold=config.growth_threshold
+            patience=config_train.patience,
+            threshold=config_train.growth_threshold
         )
         
         # Setup mixed precision if enabled
-        self.scaler = GradScaler('cuda') if config.mixed_precision else None
+        self.scaler = GradScaler('cuda') if config_train.mixed_precision else None
         
         # Setup optimizer and scheduler
         self.optimizer = None
@@ -63,7 +64,7 @@ class CascadeTrainer:
         self.growth_events = []
         
         # Setup checkpointing
-        self.checkpoint_dir = Path(config.save_dir) / config.run_name
+        self.checkpoint_dir = Path(config_train.save_dir) / config_train.run_name
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
         # Setup plotting
@@ -78,32 +79,32 @@ class CascadeTrainer:
         # Get trainable parameters (important for frozen blocks)
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         
-        if self.config.optimizer.lower() == 'adamw':
+        if self.config_train.optimizer.lower() == 'adamw':
             self.optimizer = AdamW(
                 trainable_params,
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-                betas=(self.config.beta1, self.config.beta2),
-                eps=self.config.eps
+                lr=self.config_train.learning_rate,
+                weight_decay=self.config_train.weight_decay,
+                betas=(self.config_train.beta1, self.config_train.beta2),
+                eps=self.config_train.eps
             )
-        elif self.config.optimizer.lower() == 'sgd':
+        elif self.config_train.optimizer.lower() == 'sgd':
             self.optimizer = SGD(
                 trainable_params,
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
+                lr=self.config_train.learning_rate,
+                weight_decay=self.config_train.weight_decay,
                 momentum=0.9
             )
         else:
-            raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
+            raise ValueError(f"Unknown optimizer: {self.config_train.optimizer}")
         
         # Setup scheduler
-        if self.config.scheduler.lower() == 'cosine':
+        if self.config_train.scheduler.lower() == 'cosine':
             self.scheduler = CosineAnnealingLR(
-                self.optimizer, T_max=self.config.max_epochs
+                self.optimizer, T_max=self.config_train.max_epochs
             )
-        elif self.config.scheduler.lower() == 'linear':
+        elif self.config_train.scheduler.lower() == 'linear':
             self.scheduler = LinearLR(
-                self.optimizer, start_factor=0.1, total_iters=self.config.warmup_steps
+                self.optimizer, start_factor=0.1, total_iters=self.config_train.warmup_steps
             )
     
     def _refresh_optimizer_after_growth(self):
@@ -131,16 +132,16 @@ class CascadeTrainer:
             targets = batch['targets'].to(self.device)
             
             # Forward pass with mixed precision
-            with autocast('cuda', enabled=self.config.mixed_precision):
+            with autocast('cuda', enabled=self.config_train.mixed_precision):
                 logits = self.model(input_ids)
                 loss = self.criterion(logits, targets)
                 
                 # Add L2 regularization for new blocks if configured
-                if self.config.new_block_l2 > 0 and len(self.model.blocks) > 0:
+                if self.config_train.new_block_l2 > 0 and len(self.model.blocks) > 0:
                     # Only regularize the last (newest) block
                     last_block = self.model.blocks[-1]
                     l2_loss = sum(p.pow(2.0).sum() for p in last_block.parameters())
-                    loss = loss + self.config.new_block_l2 * l2_loss
+                    loss = loss + self.config_train.new_block_l2 * l2_loss
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -148,12 +149,12 @@ class CascadeTrainer:
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config_train.gradient_clip)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.gradient_clip)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config_train.gradient_clip)
                 self.optimizer.step()
             
             # Update learning rate (after optimizer step)
@@ -166,17 +167,17 @@ class CascadeTrainer:
             self.global_step += 1
             
             # Log progress
-            if self.global_step % self.config.log_interval == 0:
+            if self.global_step % self.config_train.log_interval == 0:
                 avg_loss = total_loss / num_batches
                 logger.info(f"Epoch {self.epoch}, Step {self.global_step}: Loss = {avg_loss:.4f}")
             
             # Evaluation
-            if self.global_step % self.config.eval_interval == 0:
+            if self.global_step % self.config_train.eval_interval == 0:
                 val_metrics = self.validate()
                 logger.info(f"Validation: Loss = {val_metrics['loss']:.4f}, PPL = {val_metrics['perplexity']:.2f}")
             
             # Save checkpoint
-            if self.global_step % self.config.save_interval == 0:
+            if self.global_step % self.config_train.save_interval == 0:
                 self.save_checkpoint()
         
         return {'loss': total_loss / num_batches}
@@ -192,7 +193,7 @@ class CascadeTrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 targets = batch['targets'].to(self.device)
                 
-                with autocast('cuda', enabled=self.config.mixed_precision):
+                with autocast('cuda', enabled=self.config_train.mixed_precision):
                     logits = self.model(input_ids)
                     loss = self.criterion(logits, targets)
                 
@@ -224,7 +225,7 @@ class CascadeTrainer:
                 # Generate
                 generated = self.model.generate(
                     tokens, 
-                    max_length=self.config.max_generate_length,
+                    max_length=self.config_train.max_generate_length,
                     temperature=0.8,
                     top_k=50
                 )
@@ -238,16 +239,16 @@ class CascadeTrainer:
     def grow_network(self) -> bool:
         """Add a new transformer block to the network."""
         # Check if we can grow
-        if len(self.model.blocks) >= self.config.max_blocks:
+        if len(self.model.blocks) >= self.config_model.max_blocks:
             logger.info("Maximum blocks reached, cannot grow further")
             return False
         
         # Check parameter budget
         current_params = self.model.count_parameters()
-        if current_params > self.config.warn_at_parameters:
-            logger.warning(f"Approaching parameter limit: {current_params:,}/{self.config.max_parameters:,}")
+        if current_params > self.config_model.warn_at_parameters:
+            logger.warning(f"Approaching parameter limit: {current_params:,}/{self.config_model.max_parameters:,}")
         
-        if current_params > self.config.max_parameters:
+        if current_params > self.config_model.max_parameters:
             logger.info("Parameter budget exceeded, cannot grow further")
             return False
         
@@ -281,7 +282,7 @@ class CascadeTrainer:
         logger.info("Starting cascade-correlation training...")
         logger.info(f"Initial model: {len(self.model.blocks)} blocks, {self.model.count_parameters():,} parameters")
         
-        for epoch in range(self.config.max_epochs):
+        for epoch in range(self.config_train.max_epochs):
             self.epoch = epoch
             
             # Train for one epoch
@@ -327,7 +328,7 @@ class CascadeTrainer:
                 
                 if growth_success:
                     # Plot growth event
-                    if self.config.plot_growth:
+                    if self.config_train.plot_growth:
                         self.plot_training_progress()
                 else:
                     logger.info("Growth failed or not possible")
@@ -338,7 +339,7 @@ class CascadeTrainer:
                 self.save_checkpoint(is_best=True)
             
             # Early stopping check
-            if self.config.early_stopping:
+            if self.config_train.early_stopping:
                 if self._should_stop_early():
                     logger.info("Early stopping triggered")
                     break
@@ -351,7 +352,7 @@ class CascadeTrainer:
             logger.info(f"  {i+1}: {sample}")
         
         # Save final plots
-        if self.config.plot_growth:
+        if self.config_train.plot_growth:
             self.plot_training_progress()
             self.plot_growth_timeline()
         
@@ -360,14 +361,14 @@ class CascadeTrainer:
     
     def _should_stop_early(self) -> bool:
         """Check if early stopping conditions are met."""
-        if len(self.training_history) < self.config.early_stopping_patience:
+        if len(self.training_history) < self.config_train.early_stopping_patience:
             return False
         
-        recent_losses = [h['val_loss'] for h in self.training_history[-self.config.early_stopping_patience:]]
+        recent_losses = [h['val_loss'] for h in self.training_history[-self.config_train.early_stopping_patience:]]
         best_recent = min(recent_losses)
         current_loss = self.training_history[-1]['val_loss']
         
-        return (current_loss - best_recent) < self.config.early_stopping_min_delta
+        return (current_loss - best_recent) < self.config_train.early_stopping_min_delta
     
     def plot_training_progress(self):
         """Plot training progress with growth events."""
@@ -446,7 +447,8 @@ class CascadeTrainer:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
-            'config': asdict(self.config),
+            'config_model': asdict(self.config_model),
+            'config_train': asdict(self.config_train),
             'epoch': self.epoch,
             'global_step': self.global_step,
             'best_val_loss': self.best_val_loss,
@@ -475,7 +477,7 @@ class CascadeTrainer:
             model_info = self.model.get_info()
             # Convert config to dict for JSON serialization
             model_info_serializable = dict(model_info)
-            model_info_serializable['config'] = asdict(model_info['config'])
+            model_info_serializable['config_model'] = asdict(model_info['config_model'])
             
             with open(history_path, 'w') as f:
                 json.dump({
@@ -489,11 +491,13 @@ class CascadeTrainer:
 def main():
     """Main training function."""
     # Load configuration
-    config = CascadeConfig()
-    config.print_config()
+    config_model = ConfigCascadeCorrelation()
+    config_train = ConfigTrain()
+    config_model.print_config()
+    config_train.print_config()
     
     # Create trainer
-    trainer = CascadeTrainer(config)
+    trainer = CascadeTrainer(config_model,config_train)
     
     # Start training
     trainer.train()

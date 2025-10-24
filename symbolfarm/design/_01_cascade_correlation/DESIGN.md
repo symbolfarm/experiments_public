@@ -129,7 +129,7 @@ class CascadeTrainer:
 
 ```python
 @dataclass
-class CascadeConfig:
+class ConfigCascadeCorrelation:
     # Model architecture
     vocab_size: int = 50257  # GPT-2 tokenizer
     d_model: int = 256       # Small model dimension

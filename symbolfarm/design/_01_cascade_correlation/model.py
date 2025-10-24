@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 
 import torch
 from torch import nn
@@ -9,11 +9,12 @@ from symbolfarm.module.model import (
     TransformerBlock,
     LanguageModelingLoss
 )
+from symbolfarm.design._01_cascade_correlation.config import ConfigCascadeCorrelation
 
 class CascadeTransformer(nn.Module):
     """Cascade-Correlation Transformer that grows dynamically."""
     
-    def __init__(self, config: CascadeConfig):
+    def __init__(self, config: ConfigCascadeCorrelation):
         super().__init__()
         self.config = config
         
@@ -205,9 +206,9 @@ class CascadeTransformer(nn.Module):
 
 if __name__ == "__main__":
     # Test the model
-    from config import CascadeConfig
+    from config import ConfigCascadeCorrelation
     
-    config = CascadeConfig()
+    config = ConfigCascadeCorrelation()
     config.vocab_size = 1000  # Smaller vocab for testing
     config.max_len = 64
     config.d_model = 128

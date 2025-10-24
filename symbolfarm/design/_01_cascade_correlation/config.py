@@ -3,22 +3,7 @@ from typing import Optional
 import torch
 
 @dataclass
-class CascadeConfig:
-    # Model architecture
-    vocab_size: int = 50257  # GPT-2 tokenizer vocab size
-    d_model: int = 64       # Model dimension per block (smaller for more blocks)
-    n_heads: int = 4         # Number of attention heads per block
-    d_ff: int = 256          # FFN expansion (4x d_model)
-    max_len: int = 256       # Maximum sequence length (reduced for better memory usage)
-    dropout: float = 0.1     # Dropout probability
-    
-    # Cascade-correlation specific
-    max_blocks: int = 20     # Maximum transformer blocks
-    initial_blocks: int = 1  # Start with 1 block
-    patience: int = 4        # Epochs to wait before growth (more aggressive)
-    growth_threshold: float = 0.5  # Min improvement to continue
-    freeze_previous: bool = True     # Freeze previous blocks when growing
-    
+class ConfigTrain:
     # Training hyperparameters
     batch_size: int = 32
     learning_rate: float = 3e-4  # Higher LR for faster training with smaller model
@@ -26,13 +11,21 @@ class CascadeConfig:
     max_epochs: int = 50         # Fewer epochs, focus on cascade growth
     warmup_steps: int = 1000
     gradient_clip: float = 1.0
-    
+    max_len: int = 256       # Maximum sequence length (reduced for better memory usage)
+
+    # Hardware and performance
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    mixed_precision: bool = True  # Use automatic mixed precision
+    compile_model: bool = True    # Use torch.compile for speed
+    num_workers: int = 0          # DataLoader workers (set to 0 to avoid multiprocessing issues)
+    pin_memory: bool = True       # Pin memory for faster GPU transfer
+ 
     # Data
     dataset_name: str = "roneneldan/TinyStories"
-    train_split: str = "train"
-    val_split: str = "validation"
-    test_split: Optional[str] = None  # TinyStories doesn't have test split
-    
+    # train_split: str = "train"
+    # val_split: str = "validation"
+    # test_split: Optional[str] = None  # TinyStories doesn't have test split
+
     # Optimization
     optimizer: str = "adamw"  # adam, adamw, sgd
     scheduler: str = "cosine"  # linear, cosine, constant
@@ -43,13 +36,6 @@ class CascadeConfig:
     # Regularization
     label_smoothing: float = 0.0
     new_block_l2: float = 0.01  # L2 regularization for new blocks only
-    
-    # Hardware and performance
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    mixed_precision: bool = True  # Use automatic mixed precision
-    compile_model: bool = True    # Use torch.compile for speed
-    num_workers: int = 0          # DataLoader workers (set to 0 to avoid multiprocessing issues)
-    pin_memory: bool = True       # Pin memory for faster GPU transfer
     
     # Logging and evaluation
     log_interval: int = 100       # Log every N steps
@@ -73,6 +59,43 @@ class CascadeConfig:
     early_stopping_patience: int = 20  # Epochs without improvement
     early_stopping_min_delta: float = 0.001  # Minimum change to qualify as improvement
     
+    def __post_init__(self):
+        # Adjust batch size for available GPU memory (rough heuristic)
+        if self.device == "cuda" and torch.cuda.is_available():
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if gpu_memory_gb < 12:  # Adjust for smaller GPUs
+                self.batch_size = min(self.batch_size, 16)
+                print(f"Adjusted batch_size to {self.batch_size} for GPU with {gpu_memory_gb:.1f}GB memory")
+
+        # Set run name if not provided
+        if self.run_name is None:
+            import datetime
+            self.run_name = f"cascade_transformer_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    def print_config(self):
+        """Print configuration summary."""
+        print("=== Training and Data Configuration ===")
+        print(f"Training: lr={self.learning_rate}, batch_size={self.batch_size}, max_epochs={self.max_epochs}")
+        print(f"Data: {self.dataset_name}, max_len={self.max_len}")
+        print(f"Device: {self.device}, mixed_precision={self.mixed_precision}")
+
+@dataclass
+class ConfigCascadeCorrelation:
+    # Model architecture
+    vocab_size: int = 50257  # GPT-2 tokenizer vocab size
+    d_model: int = 64       # Model dimension per block (smaller for more blocks)
+    n_heads: int = 4         # Number of attention heads per block
+    d_ff: int = 256          # FFN expansion (4x d_model)
+    max_len: int = 256       # Maximum sequence length (reduced for better memory usage)
+    dropout: float = 0.1     # Dropout probability
+    
+    # Cascade-correlation specific
+    max_blocks: int = 20     # Maximum transformer blocks
+    initial_blocks: int = 1  # Start with 1 block
+    patience: int = 4        # Epochs to wait before growth (more aggressive)
+    growth_threshold: float = 0.5  # Min improvement to continue
+    freeze_previous: bool = True     # Freeze previous blocks when growing
+    
     # Parameter budget management
     max_parameters: int = 100_000_000  # 100M parameter budget
     warn_at_parameters: int = 80_000_000   # Warn when approaching limit
@@ -86,18 +109,7 @@ class CascadeConfig:
         assert self.patience > 0, "Patience must be positive"
         assert 0 <= self.dropout <= 1, "Dropout must be between 0 and 1"
         
-        # Set run name if not provided
-        if self.run_name is None:
-            import datetime
-            self.run_name = f"cascade_transformer_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Adjust batch size for available GPU memory (rough heuristic)
-        if self.device == "cuda" and torch.cuda.is_available():
-            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if gpu_memory_gb < 12:  # Adjust for smaller GPUs
-                self.batch_size = min(self.batch_size, 16)
-                print(f"Adjusted batch_size to {self.batch_size} for GPU with {gpu_memory_gb:.1f}GB memory")
-    
+   
     def get_parameter_estimate(self) -> int:
         """Estimate total parameters for max configuration."""
         # Embedding parameters
@@ -131,18 +143,15 @@ class CascadeConfig:
         print("=== Cascade-Correlation Transformer Configuration ===")
         print(f"Model: d_model={self.d_model}, n_heads={self.n_heads}, d_ff={self.d_ff}")
         print(f"Cascade: {self.initial_blocks} -> {self.max_blocks} blocks, patience={self.patience}")
-        print(f"Training: lr={self.learning_rate}, batch_size={self.batch_size}, max_epochs={self.max_epochs}")
-        print(f"Data: {self.dataset_name}, max_len={self.max_len}")
-        print(f"Device: {self.device}, mixed_precision={self.mixed_precision}")
         print(f"Estimated max parameters: {self.get_parameter_estimate():,}")
         print("=" * 55)
 
 # Default configuration instance
-default_config = CascadeConfig()
+default_config = ConfigCascadeCorrelation()
 
 if __name__ == "__main__":
     # Test configuration
-    config = CascadeConfig()
+    config = ConfigCascadeCorrelation()
     config.print_config()
     
     # Test parameter estimation
